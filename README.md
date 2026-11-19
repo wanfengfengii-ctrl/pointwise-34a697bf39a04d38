@@ -23,6 +23,27 @@
 - `mirror.ledger.open_mirror(path)` 打开独立镜像，由调用方关闭。`mirror.receive.load_full(db, blob, *, before_commit=None)` 返回确认修订。首份合法来件绑定流，更高修订整体替换明细。同修订同内容重投返回已有确认号，允许另一发布号指向同一内容。坏件、异绑定、同修订异内容及较低修订抛出 `ValueError`。
 - `mirror.readback.read_mirror(db, stream_id)` 一次读事务取 `MirrorSnapshot(binding, revision, rows)`。未安装的流抛出 `KeyError`。已安装空件返回确认号与空行。
 
+## 增量正文格式与交接
+
+`shipment.export.export_increment(db, stream_id, low, high)` 签发 `version=2`、`kind="increment"` 的信封，`body`、`sha256` 与 V1 相同。正文为规范化 JSON：
+
+```json
+{"binding":{"plants":["east"],"source_id":"...","stream_id":"east-daily"},
+ "changes":[{"after":{"liters":9,"plant":"east"},"day":"2026-06-12",
+             "meter":"x","revision":2}],
+ "high":3,"low":1}
+```
+
+每个 `changes` 元素表示：日键在修订 `revision` 生效后，其厂区范围内的报送像从上一确认修订的值变为 `after`；`after` 为 `null` 表示迁出报送范围或撤销。元素按 `(meter, day, revision)` 排序，同一日键可在区间内出现多次。只记录区间内报送像**曾变化**的日键：同值重报、两侧均不在厂区范围、仅范围外厂区更正都不产生记录；`(low, high]` 内没有任何变化时 `changes` 为空数组，仍确认覆盖到 `high`。签发不使用随机量，源仓追加更正后再导出同区间返回原字节。
+
+`mirror.receive.apply_increment(db, blob, *, before_commit=None)` 先校验信封、摘要、完整流绑定、`0 <= low < high`、每个记录的修订落在 `(low, high]`、厂区在范围内、按日键与修订严格排序且无重复，再按件内 `stream_id` 查找本地绑定：
+
+- 未初始化（含从未装过全量件）→ `ValueError`，与修订进度无关。
+- 本地确认修订 `F < low` → 覆盖缺口 `ValueError`；`low <= F < high` → 从本地明细重放 `revision > F` 的记录并确认到 `high`；`F >= high` → 校验通过后返回 `F`，明细与确认号不动。
+- 坏信封、异流绑定、超出区间的记录、布尔或浮点升数、非法日期、乱序或重复记录，即使 `high` 已经过去也一律 `ValueError`。
+
+安装与全量件一样在单个写事务内同时写明细和确认号；`before_commit` 抛出时整体回滚，重开读到最后成功修订。`mirror.readback.read_mirror`、`report.reconcile.daily_report` 和 `shipment.export.issue_full` 的 V1 行为保持不变。
+
 ## 核账和失败恢复
 
 `report.reconcile.daily_report(db, stream_id)` 返回 `(revision, totals)`，其中每个 `PlantTotal` 含厂区、笔数及总升数。零升计笔，空厂区省略，厂区按标识排序，升数采用精确整数求和。`reconcile_stream` 保留同一快照的排序原行供 `report.render.render_reconciliation` 生成 JSON 核账输出。读回或核对失败会抛出异常。

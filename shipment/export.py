@@ -2,13 +2,67 @@ from collections.abc import Callable
 from sqlite3 import Connection
 
 from facts.ledger import source_write
-from facts.measurements import validate_identifier
-from facts.revisions import validate_revision_number
+from facts.measurements import DayKey, Measurement, liters_from_storage, validate_identifier
+from facts.revisions import require_revision, validate_revision_number
 from facts.selection import as_of
 from shipment.catalog import PublicationReceipt, PublishedFull, find_publication, save_publication
-from shipment.envelope import seal_full
-from shipment.payload import FullPayload, encode_full_payload
-from shipment.streams import get_stream
+from shipment.envelope import seal_full, seal_increment
+from shipment.payload import (
+    FullPayload, IncrementChange, IncrementPayload, encode_full_payload, encode_increment_payload,
+    validate_interval,
+)
+from shipment.streams import StreamBinding, get_stream
+
+
+def _scoped(image: Measurement, plants: set[str]) -> Measurement | None:
+    return image if image.plant in plants else None
+
+
+def _increment_changes(
+    db: Connection, low: int, high: int, binding: StreamBinding,
+) -> tuple[IncrementChange, ...]:
+    """Replay the reported in-scope image of each day key across ``(low, high]``.
+
+    A key is recorded at a revision exactly when its in-scope image differs
+    between the snapshots before and after that revision took effect.  Keys
+    whose image never changes inside the interval are omitted, as are
+    corrections that touch only images outside the fixed plant scope.
+    """
+    plants = set(binding.plants)
+    current: dict[DayKey, Measurement] = {}
+    for key, image in as_of(db, low):
+        scoped = _scoped(image, plants)
+        if scoped is not None:
+            current[key] = scoped
+
+    changes: list[IncrementChange] = []
+    history = db.execute(
+        '''SELECT revision, meter, day, new_plant, new_liters FROM fact_history
+           WHERE revision > ? AND revision <= ? ORDER BY revision, meter, day''',
+        (low, high),
+    )
+    for revision, meter, day, plant, liters in history:
+        key = DayKey(meter, day)
+        image = None if plant is None else Measurement(plant, liters_from_storage(liters))
+        scoped = None if image is None else _scoped(image, plants)
+        if current.get(key) != scoped:
+            changes.append(IncrementChange(key, revision, scoped))
+        if scoped is None:
+            current.pop(key, None)
+        else:
+            current[key] = scoped
+    changes.sort(key=lambda change: (change.key, change.revision))
+    return tuple(changes)
+
+
+def export_increment(db: Connection, stream_id: str, low: int, high: int) -> bytes:
+    low, high = validate_interval(low, high)
+    stream_id = validate_identifier(stream_id, 'stream_id')
+    binding = get_stream(db, stream_id)
+    require_revision(db, low)
+    require_revision(db, high)
+    payload = IncrementPayload(binding, low, high, _increment_changes(db, low, high, binding))
+    return seal_increment(encode_increment_payload(payload))
 
 
 def issue_full(
