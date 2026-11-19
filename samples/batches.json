@@ -1,0 +1,15 @@
+[
+  {"request_id": "morning", "entries": [
+    {"meter": "x", "day": "2026-06-12", "before": null, "after": {"plant": "east", "liters": 5}},
+    {"meter": "y", "day": "2026-06-12", "before": null, "after": {"plant": "east", "liters": 7}},
+    {"meter": "z", "day": "2026-06-12", "before": null, "after": {"plant": "east", "liters": 0}},
+    {"meter": "w", "day": "2026-06-12", "before": null, "after": {"plant": "west", "liters": 4}}
+  ]},
+  {"request_id": "midday-correction", "entries": [
+    {"meter": "x", "day": "2026-06-12", "before": {"plant": "east", "liters": 5}, "after": {"plant": "east", "liters": 9}}
+  ]},
+  {"request_id": "handover", "entries": [
+    {"meter": "x", "day": "2026-06-12", "before": {"plant": "east", "liters": 9}, "after": {"plant": "west", "liters": 5}},
+    {"meter": "w", "day": "2026-06-12", "before": {"plant": "west", "liters": 4}, "after": null}
+  ]}
+]
